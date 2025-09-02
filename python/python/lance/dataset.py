@@ -1983,7 +1983,6 @@ class LanceDataset(pa.dataset.Dataset):
             multiple fragment-level indices need to share UUID for later merging.
             If not provided, a new UUID will be generated. This parameter is passed via
             kwargs internally.
-
         with_position: bool, default False
             This is for the ``INVERTED`` index. If True, the index will store the
             positions of the words in the document, so that you can conduct phrase
@@ -2704,8 +2703,40 @@ class LanceDataset(pa.dataset.Dataset):
         """
         return self._ds.prewarm_index(name)
 
-    def merge_index_metadata(self, index_uuid: str):
-        return self._ds.merge_index_metadata(index_uuid)
+    def merge_index_metadata(
+        self,
+        index_uuid: str,
+        index_type: Union[
+            Literal["BTREE"],
+            Literal["INVERTED"],
+        ],
+        merge_parallelism: Optional[int] = None,
+    ):
+        """
+        Merge an index which not commit at present.
+
+        Parameters
+        ----------
+        index_uuid: str
+            The uuid of the index which want to merge.
+        index_type: Literal["BTREE", "INVERTED"]
+            The type of the index.
+        merge_parallelism: int, optional
+            The number of threads to use for merging.
+            If None, use the number of available cpu cores.
+        """
+        index_type = index_type.upper()
+        if index_type not in [
+            "BTREE",
+            "INVERTED",
+        ]:
+            raise NotImplementedError(
+                (
+                    'Only "BTREE" or "INVERTED" are supported for '
+                    f"merge index metadata.  Received {index_type}",
+                )
+            )
+        return self._ds.merge_index_metadata(index_uuid, index_type, merge_parallelism)
 
     def session(self) -> Session:
         """

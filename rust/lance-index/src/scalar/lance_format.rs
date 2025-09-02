@@ -442,6 +442,7 @@ pub mod tests {
             &sub_index_trainer,
             index_store.as_ref(),
             batch_size as u32,
+            None,
         )
         .await
         .unwrap();
@@ -890,6 +891,7 @@ pub mod tests {
             &sub_index_trainer,
             index_store.as_ref(),
             DEFAULT_BTREE_BATCH_SIZE as u32,
+            None,
         )
         .await
         .unwrap();

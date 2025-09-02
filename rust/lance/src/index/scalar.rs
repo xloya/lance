@@ -370,11 +370,18 @@ pub(super) async fn build_scalar_index(
     train: bool,
     fragment_ids: Option<Vec<u32>>,
 ) -> Result<prost_types::Any> {
-    let training_request = Box::new(TrainingRequest {
-        dataset: Arc::new(dataset.clone()),
-        column: column.to_string(),
-        train,
-        fragment_ids,
+    let training_request = Box::new(match fragment_ids.clone() {
+        Some(fragment_ids) => TrainingRequest::with_fragment_ids(
+            Arc::new(dataset.clone()),
+            column.to_string(),
+            fragment_ids,
+        ),
+        None => TrainingRequest {
+            dataset: Arc::new(dataset.clone()),
+            column: column.to_string(),
+            fragment_ids: None,
+            train,
+        },
     });
     let field = dataset.schema().field(column).ok_or(Error::InvalidInput {
         source: format!("No column with name {}", column).into(),
@@ -451,6 +458,7 @@ pub(super) async fn build_scalar_index(
                 &flat_index_trainer,
                 &index_store,
                 DEFAULT_BTREE_BATCH_SIZE as u32,
+                fragment_ids,
             )
             .await?;
             Ok(btree_index_details())

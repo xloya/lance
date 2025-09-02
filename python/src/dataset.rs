@@ -1645,47 +1645,102 @@ impl Dataset {
             .infer_error()
     }
 
-    #[pyo3(signature = (index_uuid))]
-    fn merge_index_metadata(&self, index_uuid: &str) -> PyResult<()> {
+    #[pyo3(signature = (index_uuid, index_type, merge_parallelism))]
+    fn merge_index_metadata(
+        &self,
+        index_uuid: &str,
+        index_type: &str,
+        merge_parallelism: Option<usize>,
+    ) -> PyResult<()> {
+        let index_type = index_type.to_uppercase();
+        let idx_type = match index_type.as_str() {
+            "BTREE" => IndexType::BTree,
+            "INVERTED" => IndexType::Inverted,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Index type '{index_type}' is not supported."
+                )))
+            }
+        };
         RT.block_on(None, async {
             let store = LanceIndexStore::from_dataset(self.ds.as_ref(), index_uuid);
             let index_dir = self.ds.indices_dir().child(index_uuid);
+            if idx_type == IndexType::Inverted {
+                // List all partition metadata files in the index directory
+                let mut part_metadata_files = Vec::new();
+                let mut list_stream = self.ds.object_store().list(Some(index_dir.clone()));
 
-            // List all partition metadata files in the index directory
-            let mut part_metadata_files = Vec::new();
-            let mut list_stream = self.ds.object_store().list(Some(index_dir.clone()));
-
-            while let Some(item) = list_stream.next().await {
-                match item {
-                    Ok(meta) => {
-                        let file_name = meta.location.filename().unwrap_or_default();
-                        // Filter files matching the pattern part_*_metadata.lance
-                        if file_name.starts_with("part_") && file_name.ends_with("_metadata.lance")
-                        {
-                            part_metadata_files.push(file_name.to_string());
+                while let Some(item) = list_stream.next().await {
+                    match item {
+                        Ok(meta) => {
+                            let file_name = meta.location.filename().unwrap_or_default();
+                            // Filter files matching the pattern part_*_metadata.lance
+                            if file_name.starts_with("part_") && file_name.ends_with("_metadata.lance")
+                            {
+                                part_metadata_files.push(file_name.to_string());
+                            }
                         }
+                        Err(_) => continue,
                     }
-                    Err(_) => continue,
                 }
-            }
+                if part_metadata_files.is_empty() {
+                    return Err(Error::InvalidInput {
+                        source: format!(
+                            "No partition metadata files found in index directory: {}",
+                            index_dir
+                        )
+                            .into(),
+                        location: location!(),
+                    });
+                }
 
-            if part_metadata_files.is_empty() {
-                return Err(Error::InvalidInput {
-                    source: format!(
-                        "No partition metadata files found in index directory: {}",
-                        index_dir
-                    )
-                    .into(),
-                    location: location!(),
-                });
-            }
+                // Call merge_metadata_files function for inverted index
+                lance_index::scalar::inverted::builder::merge_metadata_files(
+                    Arc::new(store),
+                    &part_metadata_files,
+                ).await
+            } else {
+                // List all partition page / lookup files in the index directory
+                let mut part_page_files = Vec::new();
+                let mut part_lookup_files = Vec::new();
+                let mut list_stream = self.ds.object_store().list(Some(index_dir.clone()));
 
-            // Call merge_metadata_files function for inverted index
-            lance_index::scalar::inverted::builder::merge_metadata_files(
-                Arc::new(store),
-                &part_metadata_files,
-            )
-            .await
+                while let Some(item) = list_stream.next().await {
+                    match item {
+                        Ok(meta) => {
+                            let file_name = meta.location.filename().unwrap_or_default();
+                            // Filter files matching the pattern part_*_metadata.lance
+                            if file_name.starts_with("part_") && file_name.ends_with("_page_data.lance")
+                            {
+                                part_page_files.push(file_name.to_string());
+                            }
+                            if file_name.starts_with("part_") && file_name.ends_with("_page_lookup.lance")
+                            {
+                                part_lookup_files.push(file_name.to_string());
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                if part_page_files.is_empty() || part_lookup_files.is_empty() {
+                    return Err(Error::InvalidInput {
+                        source: format!(
+                            "No partition metadata files found in index directory: {} (page_files: {}, lookup_files: {})",
+                            index_dir, part_page_files.len(), part_lookup_files.len()
+                        )
+                            .into(),
+                        location: location!(),
+                    });
+                }
+
+                // Call merge_metadata_files function for btree index
+                lance_index::scalar::btree::merge_metadata_files(
+                    Arc::new(store),
+                    &part_page_files,
+                    &part_lookup_files,
+                    merge_parallelism,
+                ).await
+            }
         })?
         .map_err(|err| PyValueError::new_err(err.to_string()))
     }
