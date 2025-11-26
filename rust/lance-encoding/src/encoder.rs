@@ -30,6 +30,7 @@ use crate::compression_config::CompressionParams;
 use crate::decoder::PageEncoding;
 use crate::encodings::logical::blob::{BlobStructuralEncoder, BlobV2StructuralEncoder};
 use crate::encodings::logical::list::ListStructuralEncoder;
+use crate::encodings::logical::map::MapStructuralEncoder;
 use crate::encodings::logical::primitive::PrimitiveStructuralEncoder;
 use crate::encodings::logical::r#struct::StructStructuralEncoder;
 use crate::repdef::RepDefBuilder;
@@ -432,6 +433,23 @@ impl StructuralEncodingStrategy {
                         root_field_metadata,
                     )?;
                     Ok(Box::new(ListStructuralEncoder::new(
+                        options.keep_original_array,
+                        child_encoder,
+                    )))
+                }
+                DataType::Map(_, _) => {
+                    let entries_child = field
+                        .children
+                        .first()
+                        .expect("Map should have an entries child");
+                    let child_encoder = self.do_create_field_encoder(
+                        _encoding_strategy_root,
+                        entries_child,
+                        column_index,
+                        options,
+                        root_field_metadata,
+                    )?;
+                    Ok(Box::new(MapStructuralEncoder::new(
                         options.keep_original_array,
                         child_encoder,
                     )))

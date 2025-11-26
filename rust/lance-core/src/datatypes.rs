@@ -98,6 +98,10 @@ impl LogicalType {
     fn is_blob(&self) -> bool {
         self.0 == BLOB_LOGICAL_TYPE
     }
+
+    fn is_map(&self) -> bool {
+        self.0 == "map"
+    }
 }
 
 impl From<&str> for LogicalType {
@@ -196,6 +200,7 @@ impl TryFrom<&DataType> for LogicalType {
                 }
             }
             DataType::FixedSizeBinary(len) => format!("fixed_size_binary:{}", *len),
+            DataType::Map(_, _) => "map".to_string(),
             _ => {
                 return Err(Error::Schema {
                     message: format!("Unsupported data type: {:?}", dt),
