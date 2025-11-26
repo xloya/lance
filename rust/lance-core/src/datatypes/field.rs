@@ -1289,8 +1289,7 @@ mod tests {
             ])),
             false,
         ));
-        let arrow_field =
-            ArrowField::new("props", DataType::Map(entries_field.clone(), false), true);
+        let arrow_field = ArrowField::new("props", DataType::Map(entries_field, false), true);
 
         let result = Field::try_from(&arrow_field);
         assert!(result.is_err(), "Nullable map key should be rejected");
