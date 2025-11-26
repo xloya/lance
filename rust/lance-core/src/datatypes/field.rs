@@ -168,6 +168,9 @@ impl Field {
             lt if lt.is_struct() => {
                 DataType::Struct(self.children.iter().map(ArrowField::from).collect())
             }
+            lt if lt.is_map() => {
+                DataType::Map(Arc::new(ArrowField::from(&self.children[0])), false)
+            }
             lt => DataType::try_from(lt).unwrap(),
         }
     }
@@ -250,11 +253,17 @@ impl Field {
     }
 
     pub fn apply_projection(&self, projection: &Projection) -> Option<Self> {
-        let children = self
-            .children
-            .iter()
-            .filter_map(|c| c.apply_projection(projection))
-            .collect::<Vec<_>>();
+        // For Map types, we must preserve ALL children (entries struct with key/value)
+        // Map internal structure should not be subject to projection filtering
+        let children = if self.logical_type.is_map() {
+            // Map field: keep all children intact (entries struct and its key/value fields)
+            self.children.clone()
+        } else {
+            self.children
+                .iter()
+                .filter_map(|c| c.apply_projection(projection))
+                .collect::<Vec<_>>()
+        };
 
         // The following case is invalid:
         // - This is a nested field (has children)
@@ -698,6 +707,13 @@ impl Field {
                 cloned.children = vec![projected];
                 Ok(cloned)
             }
+            (DataType::Map(_, _), DataType::Map(_, _)) => {
+                let projected =
+                    self.children[0].project_by_field(&other.children[0], on_type_mismatch)?;
+                let mut cloned = self.clone();
+                cloned.children = vec![projected];
+                Ok(cloned)
+            }
             (DataType::FixedSizeList(dt, n), DataType::FixedSizeList(other_dt, m))
                 if dt == other_dt && n == m =>
             {
@@ -769,7 +785,9 @@ impl Field {
 
         if matches!(
             (&self_type, &other_type),
-            (DataType::Struct(_), DataType::Struct(_)) | (DataType::List(_), DataType::List(_))
+            (DataType::Struct(_), DataType::Struct(_))
+                | (DataType::List(_), DataType::List(_))
+                | (DataType::Map(_, _), DataType::Map(_, _))
         ) {
             // Blob v2 uses a struct logical type for descriptors, which differs from the logical
             // input struct (data/uri). When intersecting schemas for projection we want to keep
@@ -1030,6 +1048,23 @@ impl TryFrom<&ArrowField> for Field {
                 .collect::<Result<_>>()?,
             DataType::List(item) => vec![Self::try_from(item.as_ref())?],
             DataType::LargeList(item) => vec![Self::try_from(item.as_ref())?],
+            DataType::Map(entries, _) => {
+                // Validate Map key field is non-nullable (Arrow Map specification)
+                if let DataType::Struct(fields) = entries.data_type() {
+                    if let Some(key_field) = fields.first() {
+                        if key_field.is_nullable() {
+                            return Err(Error::Schema {
+                                message: format!(
+                                    "Map key field '{}' must be non-nullable according to Arrow Map specification",
+                                    key_field.name()
+                                ),
+                                location: location!(),
+                            });
+                        }
+                    }
+                }
+                vec![Self::try_from(entries.as_ref())?]
+            }
             _ => vec![],
         };
         let mut metadata = field.metadata().clone();
@@ -1063,8 +1098,10 @@ impl TryFrom<&ArrowField> for Field {
                 dt if dt.is_fixed_stride() => Some(Encoding::Plain),
                 dt if dt.is_binary_like() => Some(Encoding::VarBinary),
                 DataType::Dictionary(_, _) => Some(Encoding::Dictionary),
-                // Use plain encoder to store the offsets of list.
-                DataType::List(_) | DataType::LargeList(_) => Some(Encoding::Plain),
+                // Use plain encoder to store the offsets of list and map.
+                DataType::List(_) | DataType::LargeList(_) | DataType::Map(_, _) => {
+                    Some(Encoding::Plain)
+                }
                 _ => None,
             },
             metadata,
@@ -1206,6 +1243,23 @@ mod tests {
             .0,
             "struct"
         );
+
+        assert_eq!(
+            LogicalType::try_from(&DataType::Map(
+                Arc::new(ArrowField::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        ArrowField::new("key", DataType::Utf8, false),
+                        ArrowField::new("value", DataType::Int32, true),
+                    ])),
+                    true
+                )),
+                false
+            ))
+            .unwrap()
+            .0,
+            "map"
+        );
     }
 
     #[test]
@@ -1223,6 +1277,23 @@ mod tests {
         assert_eq!(field.name, "struct");
         assert_eq!(&field.data_type(), arrow_field.data_type());
         assert_eq!(ArrowField::from(&field), arrow_field);
+    }
+
+    #[test]
+    fn map_key_must_be_non_nullable() {
+        let entries_field = Arc::new(ArrowField::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                ArrowField::new("key", DataType::Utf8, true), // invalid: nullable key
+                ArrowField::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
+        let arrow_field =
+            ArrowField::new("props", DataType::Map(entries_field.clone(), false), true);
+
+        let result = Field::try_from(&arrow_field);
+        assert!(result.is_err(), "Nullable map key should be rejected");
     }
 
     #[test]

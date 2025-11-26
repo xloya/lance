@@ -30,7 +30,10 @@ use lance_arrow::{deepcopy::deep_copy_nulls, r#struct::StructArrayExt};
 use lance_core::Result;
 use log::trace;
 
-use super::{list::StructuralListDecoder, primitive::StructuralPrimitiveFieldDecoder};
+use super::{
+    list::StructuralListDecoder, map::StructuralMapDecoder,
+    primitive::StructuralPrimitiveFieldDecoder,
+};
 
 #[derive(Debug)]
 struct StructuralSchedulingJobWithStatus<'a> {
@@ -272,9 +275,15 @@ impl StructuralStructDecoder {
                     field.data_type().clone(),
                 ))
             }
+            DataType::Map(entries_field, _) => {
+                let child_decoder = Self::field_to_decoder(entries_field, should_validate);
+                Box::new(StructuralMapDecoder::new(
+                    child_decoder,
+                    field.data_type().clone(),
+                ))
+            }
             DataType::RunEndEncoded(_, _) => todo!(),
             DataType::ListView(_) | DataType::LargeListView(_) => todo!(),
-            DataType::Map(_, _) => todo!(),
             DataType::Union(_, _) => todo!(),
             _ => Box::new(StructuralPrimitiveFieldDecoder::new(field, should_validate)),
         }
