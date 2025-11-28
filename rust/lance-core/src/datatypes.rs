@@ -200,7 +200,21 @@ impl TryFrom<&DataType> for LogicalType {
                 }
             }
             DataType::FixedSizeBinary(len) => format!("fixed_size_binary:{}", *len),
-            DataType::Map(_, _) => "map".to_string(),
+            DataType::Map(_, keys_sorted) => {
+                // TODO: We only support keys_sorted=true for now,
+                //  because converting a rust arrow map field to the python arrow field will
+                //  lose the keys_sorted property.
+                if *keys_sorted {
+                    return Err(Error::Schema {
+                        message: format!(
+                            "Unsupported map data type with keys_sorted=true: {:?}",
+                            dt
+                        ),
+                        location: location!(),
+                    });
+                }
+                "map".to_string()
+            }
             _ => {
                 return Err(Error::Schema {
                     message: format!("Unsupported data type: {:?}", dt),

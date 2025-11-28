@@ -181,7 +181,17 @@ fn arrow_type_to_json(data_type: &DataType) -> Result<JsonArrowDataType> {
             arrow_type_to_json(value_type)
         }
 
-        DataType::Map(entries_field, _) => {
+        DataType::Map(entries_field, keys_sorted) => {
+            if *keys_sorted {
+                return Err(Error::Namespace {
+                    source: format!(
+                        "Map types with keys_sorted=true are not yet supported for JSON conversion: {:?}",
+                        data_type
+                    )
+                        .into(),
+                    location: Location::new(file!(), line!(), column!()),
+                });
+            }
             let inner_type = arrow_type_to_json(entries_field.data_type())?;
             let inner_field = JsonArrowField {
                 name: entries_field.name().clone(),
