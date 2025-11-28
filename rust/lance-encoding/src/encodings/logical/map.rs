@@ -265,7 +265,7 @@ mod tests {
 
         let test_cases = TestCases::default()
             .with_range(0..2)
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
@@ -298,7 +298,7 @@ mod tests {
             .with_range(0..4)
             .with_indices(vec![1])
             .with_indices(vec![2])
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
@@ -329,7 +329,7 @@ mod tests {
             .with_range(0..2)
             .with_indices(vec![0])
             .with_indices(vec![1])
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
@@ -378,7 +378,7 @@ mod tests {
         let test_cases = TestCases::default()
             .with_range(0..3)
             .with_indices(vec![0, 2])
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(
             vec![Arc::new(struct_array)],
@@ -424,7 +424,7 @@ mod tests {
         let test_cases = TestCases::default()
             .with_range(0..3)
             .with_indices(vec![0, 2])
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(list_array)], &test_cases, HashMap::new())
             .await;
@@ -484,7 +484,7 @@ mod tests {
 
         let test_cases = TestCases::default()
             .with_range(0..1)
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(outer_map)], &test_cases, HashMap::new())
             .await;
@@ -514,7 +514,7 @@ mod tests {
         let test_cases = TestCases::default()
             .with_range(0..2)
             .with_indices(vec![0, 1])
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
@@ -541,7 +541,7 @@ mod tests {
 
         let test_cases = TestCases::default()
             .with_range(0..2)
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
@@ -562,7 +562,7 @@ mod tests {
 
         let test_cases = TestCases::default()
             .with_range(0..2)
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
@@ -597,11 +597,110 @@ mod tests {
         let test_cases = TestCases::default()
             .with_range(0..3)
             .with_indices(vec![0, 1, 2])
-            .with_min_file_version(LanceFileVersion::V2_1);
+            .with_min_file_version(LanceFileVersion::V2_2);
 
         // This test ensures that regardless of the internal keep_original_array setting,
         // the end-to-end behavior produces equivalent results
         check_round_trip_encoding_of_data(vec![Arc::new(map_array)], &test_cases, HashMap::new())
             .await;
+    }
+
+    #[test]
+    fn test_map_not_supported_in_v2_1() {
+        use crate::decoder::{DecodeBatchScheduler, DecoderConfig, DecoderPlugins};
+        use crate::encoder::{default_encoding_strategy, ColumnIndexSequence, EncodingOptions};
+        use crate::BufferScheduler;
+        use arrow_schema::{Field as ArrowField, Schema as ArrowSchema};
+        use lance_core::{
+            cache::LanceCache,
+            datatypes::{Field, Schema},
+        };
+        use std::sync::Arc;
+
+        // Create a map field using Arrow Field first, then convert to Lance Field
+        let map_arrow_field = ArrowField::new(
+            "map_field",
+            make_map_type(DataType::Utf8, DataType::Int32),
+            true,
+        );
+        let map_field = Field::try_from(&map_arrow_field).unwrap();
+
+        // Test encoder: Try to create encoder with V2_1 version - should fail
+        let encoder_strategy = default_encoding_strategy(LanceFileVersion::V2_1);
+        let mut column_index = ColumnIndexSequence::default();
+        let options = EncodingOptions::default();
+
+        let encoder_result = encoder_strategy.create_field_encoder(
+            encoder_strategy.as_ref(),
+            &map_field,
+            &mut column_index,
+            &options,
+        );
+
+        assert!(
+            encoder_result.is_err(),
+            "Map type should not be supported in V2_1 for encoder"
+        );
+        let encoder_err = match encoder_result {
+            Ok(_) => panic!("Expected error but got Ok"),
+            Err(e) => e,
+        };
+
+        let encoder_err_msg = format!("{}", encoder_err);
+        assert!(
+            encoder_err_msg.contains("2.2"),
+            "Encoder error message should mention version 2.2, got: {}",
+            encoder_err_msg
+        );
+        assert!(
+            encoder_err_msg.contains("Map data type"),
+            "Encoder error message should mention Map data type, got: {}",
+            encoder_err_msg
+        );
+
+        // Test decoder: Try to create DecodeBatchScheduler with V2_1 version - should fail
+
+        // Create a schema with the map field
+        let arrow_schema = ArrowSchema::new(vec![map_arrow_field.clone()]);
+        let schema = Schema::try_from(&arrow_schema).unwrap();
+        let column_infos = Vec::new();
+        let column_indices = vec![0];
+        let io = Arc::new(BufferScheduler::new(bytes::Bytes::new()));
+        let cache = Arc::new(LanceCache::with_capacity(1024));
+
+        let decoder_result = futures::executor::block_on(DecodeBatchScheduler::try_new(
+            &schema,
+            &column_indices,
+            &column_infos,
+            &vec![],
+            1, // num_rows
+            Arc::<DecoderPlugins>::default(),
+            io,
+            cache,
+            &crate::decoder::FilterExpression::no_filter(),
+            &DecoderConfig::default(),
+            LanceFileVersion::V2_1,
+        ));
+
+        assert!(
+            decoder_result.is_err(),
+            "Map type should not be supported in V2_1 for decoder"
+        );
+        let decoder_err = match decoder_result {
+            Ok(_) => panic!("Expected error but got Ok"),
+            Err(e) => e,
+        };
+
+        let decoder_err_msg = format!("{}", decoder_err);
+        assert!(
+            decoder_err_msg.contains("2.2"),
+            "Decoder error message should mention version 2.2, got: {}",
+            decoder_err_msg
+        );
+        assert!(
+            decoder_err_msg.contains("Map data type"),
+            "Decoder error message should mention Map data type, got: {}",
+            decoder_err_msg
+        );
     }
 }
