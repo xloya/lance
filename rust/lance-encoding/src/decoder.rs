@@ -477,6 +477,7 @@ pub struct CoreFieldDecoderStrategy {
     pub validate_data: bool,
     pub decompressor_strategy: Arc<dyn DecompressionStrategy>,
     pub cache_repetition_index: bool,
+    pub file_version: LanceFileVersion,
 }
 
 impl Default for CoreFieldDecoderStrategy {
@@ -485,6 +486,7 @@ impl Default for CoreFieldDecoderStrategy {
             validate_data: false,
             decompressor_strategy: Arc::new(DefaultDecompressionStrategy {}),
             cache_repetition_index: false,
+            file_version: LanceFileVersion::default(),
         }
     }
 }
@@ -502,6 +504,20 @@ impl CoreFieldDecoderStrategy {
             validate_data: config.validate_on_decode,
             decompressor_strategy: Arc::new(DefaultDecompressionStrategy {}),
             cache_repetition_index: config.cache_repetition_index,
+            file_version: LanceFileVersion::default(),
+        }
+    }
+
+    /// Create a new strategy from decoder config with file version
+    pub fn from_decoder_config_with_version(
+        config: &DecoderConfig,
+        file_version: LanceFileVersion,
+    ) -> Self {
+        Self {
+            validate_data: config.validate_on_decode,
+            decompressor_strategy: Arc::new(DefaultDecompressionStrategy {}),
+            cache_repetition_index: config.cache_repetition_index,
+            file_version,
         }
     }
 
@@ -775,6 +791,16 @@ impl CoreFieldDecoderStrategy {
                     as Box<dyn StructuralFieldScheduler>)
             }
             DataType::Map(_, _) => {
+                if self.file_version < LanceFileVersion::V2_2 {
+                    return Err(Error::NotSupported {
+                        source: format!(
+                            "Map data type is only supported in Lance file format 2.2+, current version: {}",
+                            self.file_version
+                        )
+                        .into(),
+                        location: location!(),
+                    });
+                }
                 let entries_child = field
                     .children
                     .first()
@@ -993,6 +1019,7 @@ impl DecodeBatchScheduler {
         cache: Arc<LanceCache>,
         filter: &FilterExpression,
         decoder_config: &DecoderConfig,
+        file_version: LanceFileVersion,
     ) -> Result<Self> {
         assert!(num_rows > 0);
         let buffers = FileBuffers {
@@ -1013,7 +1040,10 @@ impl DecodeBatchScheduler {
         if column_infos.is_empty() || column_infos[0].is_structural() {
             let mut column_iter = ColumnInfoIter::new(column_infos.to_vec(), column_indices);
 
-            let strategy = CoreFieldDecoderStrategy::from_decoder_config(decoder_config);
+            let strategy = CoreFieldDecoderStrategy::from_decoder_config_with_version(
+                decoder_config,
+                file_version,
+            );
             let mut root_scheduler =
                 strategy.create_structural_field_scheduler(&root_field, &mut column_iter)?;
 
@@ -1037,7 +1067,10 @@ impl DecodeBatchScheduler {
                 .chain(column_indices.iter().map(|i| i.saturating_add(1)))
                 .collect::<Vec<_>>();
             let mut column_iter = ColumnInfoIter::new(columns, &adjusted_column_indices);
-            let strategy = CoreFieldDecoderStrategy::from_decoder_config(decoder_config);
+            let strategy = CoreFieldDecoderStrategy::from_decoder_config_with_version(
+                decoder_config,
+                file_version,
+            );
             let root_scheduler =
                 strategy.create_legacy_field_scheduler(&root_field, &mut column_iter, buffers)?;
 
@@ -1842,6 +1875,8 @@ pub struct SchedulerDecoderConfig {
     pub cache: Arc<LanceCache>,
     /// Decoder configuration
     pub decoder_config: DecoderConfig,
+    /// File version
+    pub file_version: LanceFileVersion,
 }
 
 fn check_scheduler_on_drop(
@@ -1959,6 +1994,7 @@ fn create_scheduler_decoder(
             config.cache,
             &filter,
             &config.decoder_config,
+            config.file_version,
         )
         .await
         {
@@ -2079,6 +2115,7 @@ pub fn schedule_and_decode_blocking(
         config.cache,
         &filter,
         &config.decoder_config,
+        config.file_version,
     ))?;
 
     // Schedule the requested rows
@@ -2638,6 +2675,7 @@ pub async fn decode_batch(
         cache,
         filter,
         &DecoderConfig::default(),
+        version,
     )
     .await?;
     let (tx, rx) = unbounded_channel();

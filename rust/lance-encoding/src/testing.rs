@@ -200,6 +200,7 @@ async fn test_decode(
         cache,
         &FilterExpression::no_filter(),
         &DecoderConfig::default(),
+        LanceFileVersion::V2_2, // Default to V2_2 for testing
     )
     .await
     .unwrap();

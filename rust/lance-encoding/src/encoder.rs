@@ -438,6 +438,16 @@ impl StructuralEncodingStrategy {
                     )))
                 }
                 DataType::Map(_, _) => {
+                    if self.version < LanceFileVersion::V2_2 {
+                        return Err(Error::NotSupported {
+                            source: format!(
+                                "Map data type is only supported in Lance file format 2.2+, current version: {}",
+                                self.version
+                            )
+                            .into(),
+                            location: location!(),
+                        });
+                    }
                     let entries_child = field
                         .children
                         .first()

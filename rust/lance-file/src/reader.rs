@@ -871,6 +871,7 @@ impl FileReader {
         projection: ReaderProjection,
         filter: FilterExpression,
         decoder_config: DecoderConfig,
+        file_version: LanceFileVersion,
     ) -> Result<BoxStream<'static, ReadBatchTask>> {
         debug!(
             "Reading range {:?} with batch_size {} from file with {} rows and {} columns into schema with {} columns",
@@ -887,6 +888,7 @@ impl FileReader {
             decoder_plugins,
             io,
             decoder_config,
+            file_version,
         };
 
         let requested_rows = RequestedRows::Ranges(vec![range]);
@@ -920,6 +922,7 @@ impl FileReader {
             projection,
             filter,
             self.options.decoder_config.clone(),
+            self.metadata.version(),
         )
     }
 
@@ -934,6 +937,7 @@ impl FileReader {
         projection: ReaderProjection,
         filter: FilterExpression,
         decoder_config: DecoderConfig,
+        file_version: LanceFileVersion,
     ) -> Result<BoxStream<'static, ReadBatchTask>> {
         debug!(
             "Taking {} rows spread across range {}..{} with batch_size {} from columns {:?}",
@@ -950,6 +954,7 @@ impl FileReader {
             decoder_plugins,
             io,
             decoder_config,
+            file_version,
         };
 
         let requested_rows = RequestedRows::Indices(indices);
@@ -981,6 +986,7 @@ impl FileReader {
             projection,
             FilterExpression::no_filter(),
             self.options.decoder_config.clone(),
+            self.metadata.version(),
         )
     }
 
@@ -995,6 +1001,7 @@ impl FileReader {
         projection: ReaderProjection,
         filter: FilterExpression,
         decoder_config: DecoderConfig,
+        file_version: LanceFileVersion,
     ) -> Result<BoxStream<'static, ReadBatchTask>> {
         let num_rows = ranges.iter().map(|r| r.end - r.start).sum::<u64>();
         debug!(
@@ -1013,6 +1020,7 @@ impl FileReader {
             decoder_plugins,
             io,
             decoder_config,
+            file_version,
         };
 
         let requested_rows = RequestedRows::Ranges(ranges);
@@ -1044,6 +1052,7 @@ impl FileReader {
             projection,
             filter,
             self.options.decoder_config.clone(),
+            self.metadata.version(),
         )
     }
 
@@ -1197,6 +1206,7 @@ impl FileReader {
             decoder_plugins: self.decoder_plugins.clone(),
             io: self.scheduler.clone(),
             decoder_config: self.options.decoder_config.clone(),
+            file_version: self.metadata.version(),
         };
 
         let requested_rows = RequestedRows::Indices(indices);
@@ -1236,6 +1246,7 @@ impl FileReader {
             decoder_plugins: self.decoder_plugins.clone(),
             io: self.scheduler.clone(),
             decoder_config: self.options.decoder_config.clone(),
+            file_version: self.metadata.version(),
         };
 
         let requested_rows = RequestedRows::Ranges(ranges);
@@ -1275,6 +1286,7 @@ impl FileReader {
             decoder_plugins: self.decoder_plugins.clone(),
             io: self.scheduler.clone(),
             decoder_config: self.options.decoder_config.clone(),
+            file_version: self.metadata.version(),
         };
 
         let requested_rows = RequestedRows::Ranges(vec![range]);
@@ -2155,6 +2167,7 @@ pub mod tests {
             test_cache(),
             &FilterExpression::no_filter(),
             &DecoderConfig::default(),
+            file_reader.metadata.version(),
         )
         .await
         .unwrap();
