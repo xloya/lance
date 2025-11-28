@@ -201,7 +201,7 @@ impl TryFrom<&DataType> for LogicalType {
             }
             DataType::FixedSizeBinary(len) => format!("fixed_size_binary:{}", *len),
             DataType::Map(_, keys_sorted) => {
-                // TODO: We only support keys_sorted=true for now,
+                // TODO: We only support keys_sorted=false for now,
                 //  because converting a rust arrow map field to the python arrow field will
                 //  lose the keys_sorted property.
                 if *keys_sorted {
