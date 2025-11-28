@@ -778,3 +778,80 @@ def test_map_projection_multiple_value_types(tmp_path: Path):
     assert result4["bool_map"][0].as_py() == [("flag1", True)]
     assert result4["bool_map"][1].as_py() == [("flag2", False)]
     assert result4["bool_map"][2].as_py() == [("flag3", True), ("flag4", False)]
+
+
+def test_map_keys_sorted_unsupported(tmp_path: Path):
+    """Test that keys_sorted=True is not supported"""
+    # Test that keys_sorted=True is rejected
+    schema_sorted = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field("sorted_map", pa.map_(pa.string(), pa.int32(), keys_sorted=True)),
+        ]
+    )
+
+    data_sorted = pa.table(
+        {"id": [1, 2], "sorted_map": [[("a", 1), ("b", 2)], [("c", 3)]]},
+        schema=schema_sorted,
+    )
+
+    # Writing should fail with keys_sorted=True
+    with pytest.raises(Exception) as exc_info:
+        lance.write_dataset(
+            data_sorted, tmp_path / "sorted", data_storage_version="2.2"
+        )
+    error_msg = str(exc_info.value)
+    assert (
+        "keys_sorted=true" in error_msg.lower()
+        or "unsupported map field" in error_msg.lower()
+    ), f"Expected error about keys_sorted=true, got: {error_msg}"
+
+    # Test that keys_sorted=False (default) is supported
+    schema_unsorted = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "unsorted_map", pa.map_(pa.string(), pa.int32(), keys_sorted=False)
+            ),
+        ]
+    )
+
+    data_unsorted = pa.table(
+        {"id": [1, 2], "unsorted_map": [[("z", 1), ("a", 2)], [("c", 3)]]},
+        schema=schema_unsorted,
+    )
+
+    dataset_unsorted = lance.write_dataset(
+        data_unsorted, tmp_path / "unsorted", data_storage_version="2.2"
+    )
+    result_unsorted = dataset_unsorted.to_table()
+
+    # Verify keys_sorted=False is preserved
+    map_type_unsorted = result_unsorted.schema.field("unsorted_map").type
+    assert isinstance(map_type_unsorted, pa.MapType)
+    assert map_type_unsorted.keys_sorted is False
+
+    # Test that default (keys_sorted=False) works
+    schema_default = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "default_map", pa.map_(pa.string(), pa.int32())
+            ),  # default is False
+        ]
+    )
+
+    data_default = pa.table(
+        {"id": [1, 2], "default_map": [[("z", 1), ("a", 2)], [("c", 3)]]},
+        schema=schema_default,
+    )
+
+    dataset_default = lance.write_dataset(
+        data_default, tmp_path / "default", data_storage_version="2.2"
+    )
+    result_default = dataset_default.to_table()
+
+    # Verify default keys_sorted=False is preserved
+    map_type_default = result_default.schema.field("default_map").type
+    assert isinstance(map_type_default, pa.MapType)
+    assert map_type_default.keys_sorted is False

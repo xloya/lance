@@ -7,6 +7,10 @@ use std::{
     sync::Arc,
 };
 
+use super::{
+    list::StructuralListDecoder, map::StructuralMapDecoder,
+    primitive::StructuralPrimitiveFieldDecoder,
+};
 use crate::{
     decoder::{
         DecodedArray, FilterExpression, LoadedPageShard, NextDecodeTask, PageEncoding,
@@ -27,13 +31,9 @@ use futures::{
 use itertools::Itertools;
 use lance_arrow::FieldExt;
 use lance_arrow::{deepcopy::deep_copy_nulls, r#struct::StructArrayExt};
-use lance_core::Result;
+use lance_core::{Error, Result};
 use log::trace;
-
-use super::{
-    list::StructuralListDecoder, map::StructuralMapDecoder,
-    primitive::StructuralPrimitiveFieldDecoder,
-};
+use snafu::location;
 
 #[derive(Debug)]
 struct StructuralSchedulingJobWithStatus<'a> {
@@ -275,7 +275,10 @@ impl StructuralStructDecoder {
                     field.data_type().clone(),
                 ))
             }
-            DataType::Map(entries_field, _) => {
+            DataType::Map(entries_field, keys_sorted) => {
+                if *keys_sorted {
+                    todo!("Maps are not supported keys_sorted=true yet")
+                }
                 let child_decoder = Self::field_to_decoder(entries_field, should_validate);
                 Box::new(StructuralMapDecoder::new(
                     child_decoder,

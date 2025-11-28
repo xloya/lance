@@ -790,7 +790,16 @@ impl CoreFieldDecoderStrategy {
                 Ok(Box::new(StructuralListScheduler::new(child_scheduler))
                     as Box<dyn StructuralFieldScheduler>)
             }
-            DataType::Map(_, _) => {
+            DataType::Map(_, keys_sorted) => {
+                // TODO: We only support keys_sorted=true for now,
+                //  because converting a rust arrow map field to the python arrow field will
+                //  lose the keys_sorted property.
+                if *keys_sorted {
+                    return Err(Error::NotSupported {
+                        source: format!("Map data type is only supported with keys_sorted=true now, current value is {}", *keys_sorted).into(),
+                        location: location!(),
+                    });
+                }
                 if self.file_version < LanceFileVersion::V2_2 {
                     return Err(Error::NotSupported {
                         source: format!(

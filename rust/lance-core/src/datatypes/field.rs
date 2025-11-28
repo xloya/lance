@@ -1035,6 +1035,7 @@ impl TryFrom<&ArrowField> for Field {
     type Error = Error;
 
     fn try_from(field: &ArrowField) -> Result<Self> {
+        let mut metadata = field.metadata().clone();
         let children = match field.data_type() {
             DataType::Struct(children) => children
                 .iter()
@@ -1042,7 +1043,16 @@ impl TryFrom<&ArrowField> for Field {
                 .collect::<Result<_>>()?,
             DataType::List(item) => vec![Self::try_from(item.as_ref())?],
             DataType::LargeList(item) => vec![Self::try_from(item.as_ref())?],
-            DataType::Map(entries, _) => {
+            DataType::Map(entries, keys_sorted) => {
+                // TODO: We only support keys_sorted=true for now,
+                //  because converting a rust arrow map field to the python arrow field will
+                //  lose the keys_sorted property.
+                if *keys_sorted {
+                    return Err(Error::Schema {
+                        message: "Unsupported map field with keys_sorted=true".to_string(),
+                        location: location!(),
+                    });
+                }
                 // Validate Map key field is non-nullable (Arrow Map specification)
                 if let DataType::Struct(fields) = entries.data_type() {
                     if let Some(key_field) = fields.first() {
@@ -1061,7 +1071,6 @@ impl TryFrom<&ArrowField> for Field {
             }
             _ => vec![],
         };
-        let mut metadata = field.metadata().clone();
         let unenforced_primary_key = metadata
             .get(LANCE_UNENFORCED_PRIMARY_KEY)
             .map(|s| matches!(s.to_lowercase().as_str(), "true" | "1" | "yes"))
@@ -1287,6 +1296,40 @@ mod tests {
 
         let result = Field::try_from(&arrow_field);
         assert!(result.is_err(), "Nullable map key should be rejected");
+    }
+
+    #[test]
+    fn map_keys_sorted_unsupported() {
+        let entries_field = Arc::new(ArrowField::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                ArrowField::new("key", DataType::Utf8, false),
+                ArrowField::new("value", DataType::Int32, true),
+            ])),
+            false,
+        ));
+
+        // Test that keys_sorted=true is rejected
+        let arrow_field_sorted = ArrowField::new(
+            "map_field",
+            DataType::Map(entries_field.clone(), true),
+            true,
+        );
+        let result = Field::try_from(&arrow_field_sorted);
+        assert!(result.is_err(), "keys_sorted=true should be rejected");
+        assert!(result.unwrap_err().to_string().contains("keys_sorted=true"));
+
+        // Test that keys_sorted=false is supported
+        let arrow_field_unsorted =
+            ArrowField::new("map_field", DataType::Map(entries_field, false), true);
+        let lance_field_unsorted = Field::try_from(&arrow_field_unsorted).unwrap();
+
+        // Verify conversion back to ArrowField preserves keys_sorted=false
+        let converted_field_unsorted = ArrowField::from(&lance_field_unsorted);
+        match converted_field_unsorted.data_type() {
+            DataType::Map(_, keys_sorted) => assert!(!keys_sorted, "keys_sorted should be false"),
+            _ => panic!("Expected Map type"),
+        }
     }
 
     #[test]

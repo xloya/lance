@@ -190,11 +190,15 @@ impl StructuralDecodeArrayTask for StructuralMapDecodeTask {
         // Decode the offsets from RepDef
         let (offsets, validity) = repdef.unravel_offsets::<i32>()?;
 
-        // Extract the entries field from the map data type
-        let entries_field = match &self.data_type {
-            DataType::Map(field, _) => field.clone(),
+        // Extract the entries field and keys_sorted from the map data type
+        let (entries_field, keys_sorted) = match &self.data_type {
+            DataType::Map(field, keys_sorted) => (field.clone(), *keys_sorted),
             _ => panic!("Map decoder did not have a map field"),
         };
+
+        if keys_sorted {
+            panic!("Map type decoder does not support keys_sorted=true now")
+        }
 
         // Convert the decoded array to StructArray
         let entries = array
@@ -203,8 +207,8 @@ impl StructuralDecodeArrayTask for StructuralMapDecodeTask {
             .expect("Map entries should be a StructArray")
             .clone();
 
-        // Build the MapArray from offsets, entries, and validity
-        let map_array = MapArray::new(entries_field, offsets, entries, validity, false);
+        // Build the MapArray from offsets, entries, validity, and keys_sorted
+        let map_array = MapArray::new(entries_field, offsets, entries, validity, keys_sorted);
 
         Ok(DecodedArray {
             array: Arc::new(map_array),
