@@ -31,9 +31,8 @@ use futures::{
 use itertools::Itertools;
 use lance_arrow::FieldExt;
 use lance_arrow::{deepcopy::deep_copy_nulls, r#struct::StructArrayExt};
-use lance_core::{Error, Result};
+use lance_core::Result;
 use log::trace;
-use snafu::location;
 
 #[derive(Debug)]
 struct StructuralSchedulingJobWithStatus<'a> {

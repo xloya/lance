@@ -645,9 +645,8 @@ mod tests {
             encoder_result.is_err(),
             "Map type should not be supported in V2_1 for encoder"
         );
-        let encoder_err = match encoder_result {
-            Ok(_) => panic!("Expected error but got Ok"),
-            Err(e) => e,
+        let Err(encoder_err) = encoder_result else {
+            panic!("Expected error but got Ok")
         };
 
         let encoder_err_msg = format!("{}", encoder_err);
@@ -665,7 +664,7 @@ mod tests {
         // Test decoder: Try to create DecodeBatchScheduler with V2_1 version - should fail
 
         // Create a schema with the map field
-        let arrow_schema = ArrowSchema::new(vec![map_arrow_field.clone()]);
+        let arrow_schema = ArrowSchema::new(vec![map_arrow_field]);
         let schema = Schema::try_from(&arrow_schema).unwrap();
         let column_infos = Vec::new();
         let column_indices = vec![0];
@@ -690,9 +689,8 @@ mod tests {
             decoder_result.is_err(),
             "Map type should not be supported in V2_1 for decoder"
         );
-        let decoder_err = match decoder_result {
-            Ok(_) => panic!("Expected error but got Ok"),
-            Err(e) => e,
+        let Err(decoder_err) = decoder_result else {
+            panic!("Expected error but got Ok")
         };
 
         let decoder_err_msg = format!("{}", decoder_err);
