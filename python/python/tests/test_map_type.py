@@ -28,8 +28,8 @@ def test_simple_map_write_read(tmp_path: Path):
         schema=schema,
     )
 
-    # Write to Lance (requires v2.1+)
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    # Write to Lance (requires v2.2+)
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
 
     # Read and verify
     result = dataset.to_table()
@@ -59,7 +59,7 @@ def test_map_with_nulls(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -83,7 +83,7 @@ def test_map_with_null_values(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -110,7 +110,7 @@ def test_empty_maps(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -145,7 +145,7 @@ def test_nested_map_in_struct(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -176,7 +176,7 @@ def test_list_of_maps(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -200,7 +200,7 @@ def test_map_different_key_types(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -228,7 +228,7 @@ def test_query_map_column(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
 
     # Column selection (full read)
     result = dataset.to_table(columns=["id"])
@@ -264,7 +264,7 @@ def test_map_value_types(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -279,13 +279,13 @@ def test_map_append_data(tmp_path: Path):
     # Initial data
     data1 = pa.table({"id": [1, 2], "data": [[("a", 1)], [("b", 2)]]}, schema=schema)
 
-    lance.write_dataset(data1, tmp_path, data_storage_version="2.1")
+    lance.write_dataset(data1, tmp_path, data_storage_version="2.2")
 
     # Append more data
     data2 = pa.table({"id": [3, 4], "data": [[("c", 3)], [("d", 4)]]}, schema=schema)
 
     # Reopen dataset before appending
-    lance.write_dataset(data2, tmp_path, mode="append", data_storage_version="2.1")
+    lance.write_dataset(data2, tmp_path, mode="append", data_storage_version="2.2")
 
     # Reopen and read
     dataset_reopened = lance.dataset(tmp_path)
@@ -313,7 +313,7 @@ def test_map_large_entries(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     assert result.schema == schema
@@ -332,16 +332,26 @@ def test_map_version_compatibility(tmp_path: Path):
         {"id": [1, 2], "map_field": [[("a", 1)], [("b", 2)]]}, schema=schema
     )
 
-    # Writing with v2.1 should succeed
-    dataset = lance.write_dataset(data, tmp_path / "v21", data_storage_version="2.1")
+    # Writing with v2.2 should succeed
+    dataset = lance.write_dataset(data, tmp_path / "v22", data_storage_version="2.2")
     result = dataset.to_table()
     assert result.equals(data)
 
-    # should raise a panic for v2.0
+    # should raise an error for v2.1
+    with pytest.raises(Exception) as exc_info:
+        lance.write_dataset(data, tmp_path / "v21", data_storage_version="2.1")
+    # Verify error message mentions version 2.2 or Map data type or not yet implemented
+    error_msg = str(exc_info.value)
+    assert (
+        "2.2" in error_msg
+        or "Map data type" in error_msg
+        or "not yet implemented" in error_msg.lower()
+        or "not supported" in error_msg.lower()
+    )
+
+    # should raise a panic for v2.0 (not yet implemented)
     with pytest.raises(BaseException):
-        dataset = lance.write_dataset(
-            data, tmp_path / "v20", data_storage_version="2.0"
-        )
+        lance.write_dataset(data, tmp_path / "v20", data_storage_version="2.0")
 
 
 def test_map_roundtrip_preservation(tmp_path: Path):
@@ -358,7 +368,7 @@ def test_map_roundtrip_preservation(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
     result = dataset.to_table()
 
     # Verify Map types
@@ -393,7 +403,7 @@ def test_map_keys_cannot_be_null(tmp_path: Path):
 
     # This should succeed
     dataset = lance.write_dataset(
-        data_valid, tmp_path / "valid", data_storage_version="2.1"
+        data_valid, tmp_path / "valid", data_storage_version="2.2"
     )
     result = dataset.to_table()
     assert result.equals(data_valid)
@@ -424,7 +434,7 @@ def test_map_keys_cannot_be_null(tmp_path: Path):
     )
 
     dataset2 = lance.write_dataset(
-        data_null_values, tmp_path / "null_values", data_storage_version="2.1"
+        data_null_values, tmp_path / "null_values", data_storage_version="2.2"
     )
     result2 = dataset2.to_table()
 
@@ -494,7 +504,7 @@ def test_map_projection_queries(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
 
     # Test 1: Project only map column
     result1 = dataset.to_table(columns=["properties"])
@@ -609,7 +619,7 @@ def test_map_projection_nested_struct(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
 
     # Test 1: Project the entire struct containing map
     result1 = dataset.to_table(columns=["id", "user"])
@@ -668,7 +678,7 @@ def test_map_projection_list_of_maps(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
 
     # Test 1: Project list of maps
     result1 = dataset.to_table(columns=["configs"])
@@ -733,7 +743,7 @@ def test_map_projection_multiple_value_types(tmp_path: Path):
         schema=schema,
     )
 
-    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.1")
+    dataset = lance.write_dataset(data, tmp_path, data_storage_version="2.2")
 
     # Test 1: Project subset of map columns
     result1 = dataset.to_table(columns=["id", "int_map", "string_map"])
