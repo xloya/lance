@@ -200,7 +200,6 @@ async fn test_decode(
         cache,
         &FilterExpression::no_filter(),
         &DecoderConfig::default(),
-        LanceFileVersion::V2_2, // Default to V2_2 for testing
     )
     .await
     .unwrap();
@@ -218,7 +217,8 @@ async fn test_decode(
         is_structural_encoding,
         /*should_validate=*/ true,
         rx,
-    );
+    )
+    .unwrap();
 
     let mut offset = 0;
     while let Some(batch) = decode_stream.next().await {
