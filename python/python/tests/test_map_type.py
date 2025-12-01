@@ -340,11 +340,10 @@ def test_map_version_compatibility(tmp_path: Path):
     # should raise an error for v2.1
     with pytest.raises(Exception) as exc_info:
         lance.write_dataset(data, tmp_path / "v21", data_storage_version="2.1")
-    # Verify error message mentions version 2.2 or Map data type or not yet implemented
+    # Verify error message
     error_msg = str(exc_info.value)
     assert (
-        "2.2" in error_msg
-        or "Map data type" in error_msg
+        "Map data type" in error_msg
         or "not yet implemented" in error_msg.lower()
         or "not supported" in error_msg.lower()
     )

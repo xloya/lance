@@ -477,7 +477,6 @@ pub struct CoreFieldDecoderStrategy {
     pub validate_data: bool,
     pub decompressor_strategy: Arc<dyn DecompressionStrategy>,
     pub cache_repetition_index: bool,
-    pub file_version: LanceFileVersion,
 }
 
 impl Default for CoreFieldDecoderStrategy {
@@ -486,7 +485,6 @@ impl Default for CoreFieldDecoderStrategy {
             validate_data: false,
             decompressor_strategy: Arc::new(DefaultDecompressionStrategy {}),
             cache_repetition_index: false,
-            file_version: LanceFileVersion::default(),
         }
     }
 }
@@ -504,20 +502,6 @@ impl CoreFieldDecoderStrategy {
             validate_data: config.validate_on_decode,
             decompressor_strategy: Arc::new(DefaultDecompressionStrategy {}),
             cache_repetition_index: config.cache_repetition_index,
-            file_version: LanceFileVersion::default(),
-        }
-    }
-
-    /// Create a new strategy from decoder config with file version
-    pub fn from_decoder_config_with_version(
-        config: &DecoderConfig,
-        file_version: LanceFileVersion,
-    ) -> Self {
-        Self {
-            validate_data: config.validate_on_decode,
-            decompressor_strategy: Arc::new(DefaultDecompressionStrategy {}),
-            cache_repetition_index: config.cache_repetition_index,
-            file_version,
         }
     }
 
@@ -800,16 +784,6 @@ impl CoreFieldDecoderStrategy {
                         location: location!(),
                     });
                 }
-                if self.file_version < LanceFileVersion::V2_2 {
-                    return Err(Error::NotSupported {
-                        source: format!(
-                            "Map data type is only supported in Lance file format 2.2+, current version: {}",
-                            self.file_version
-                        )
-                        .into(),
-                        location: location!(),
-                    });
-                }
                 let entries_child = field
                     .children
                     .first()
@@ -1028,7 +1002,6 @@ impl DecodeBatchScheduler {
         cache: Arc<LanceCache>,
         filter: &FilterExpression,
         decoder_config: &DecoderConfig,
-        file_version: LanceFileVersion,
     ) -> Result<Self> {
         assert!(num_rows > 0);
         let buffers = FileBuffers {
@@ -1049,10 +1022,7 @@ impl DecodeBatchScheduler {
         if column_infos.is_empty() || column_infos[0].is_structural() {
             let mut column_iter = ColumnInfoIter::new(column_infos.to_vec(), column_indices);
 
-            let strategy = CoreFieldDecoderStrategy::from_decoder_config_with_version(
-                decoder_config,
-                file_version,
-            );
+            let strategy = CoreFieldDecoderStrategy::from_decoder_config(decoder_config);
             let mut root_scheduler =
                 strategy.create_structural_field_scheduler(&root_field, &mut column_iter)?;
 
@@ -1076,10 +1046,7 @@ impl DecodeBatchScheduler {
                 .chain(column_indices.iter().map(|i| i.saturating_add(1)))
                 .collect::<Vec<_>>();
             let mut column_iter = ColumnInfoIter::new(columns, &adjusted_column_indices);
-            let strategy = CoreFieldDecoderStrategy::from_decoder_config_with_version(
-                decoder_config,
-                file_version,
-            );
+            let strategy = CoreFieldDecoderStrategy::from_decoder_config(decoder_config);
             let root_scheduler =
                 strategy.create_legacy_field_scheduler(&root_field, &mut column_iter, buffers)?;
 
@@ -1884,8 +1851,6 @@ pub struct SchedulerDecoderConfig {
     pub cache: Arc<LanceCache>,
     /// Decoder configuration
     pub decoder_config: DecoderConfig,
-    /// File version
-    pub file_version: LanceFileVersion,
 }
 
 fn check_scheduler_on_drop(
@@ -1915,21 +1880,24 @@ pub fn create_decode_stream(
     is_structural: bool,
     should_validate: bool,
     rx: mpsc::UnboundedReceiver<Result<DecoderMessage>>,
-) -> BoxStream<'static, ReadBatchTask> {
+) -> Result<BoxStream<'static, ReadBatchTask>> {
     if is_structural {
         let arrow_schema = ArrowSchema::from(schema);
         let structural_decoder = StructuralStructDecoder::new(
             arrow_schema.fields,
             should_validate,
             /*is_root=*/ true,
-        );
-        StructuralBatchDecodeStream::new(rx, batch_size, num_rows, structural_decoder).into_stream()
+        )?;
+        Ok(
+            StructuralBatchDecodeStream::new(rx, batch_size, num_rows, structural_decoder)
+                .into_stream(),
+        )
     } else {
         let arrow_schema = ArrowSchema::from(schema);
         let root_fields = arrow_schema.fields;
 
         let simple_struct_decoder = SimpleStructDecoder::new(root_fields, num_rows);
-        BatchDecodeStream::new(rx, batch_size, num_rows, simple_struct_decoder).into_stream()
+        Ok(BatchDecodeStream::new(rx, batch_size, num_rows, simple_struct_decoder).into_stream())
     }
 }
 
@@ -1943,28 +1911,28 @@ pub fn create_decode_iterator(
     should_validate: bool,
     is_structural: bool,
     messages: VecDeque<Result<DecoderMessage>>,
-) -> Box<dyn RecordBatchReader + Send + 'static> {
+) -> Result<Box<dyn RecordBatchReader + Send + 'static>> {
     let arrow_schema = Arc::new(ArrowSchema::from(schema));
     let root_fields = arrow_schema.fields.clone();
     if is_structural {
         let simple_struct_decoder =
-            StructuralStructDecoder::new(root_fields, should_validate, /*is_root=*/ true);
-        Box::new(BatchDecodeIterator::new(
+            StructuralStructDecoder::new(root_fields, should_validate, /*is_root=*/ true)?;
+        Ok(Box::new(BatchDecodeIterator::new(
             messages,
             batch_size,
             num_rows,
             simple_struct_decoder,
             arrow_schema,
-        ))
+        )))
     } else {
         let root_decoder = SimpleStructDecoder::new(root_fields, num_rows);
-        Box::new(BatchDecodeIterator::new(
+        Ok(Box::new(BatchDecodeIterator::new(
             messages,
             batch_size,
             num_rows,
             root_decoder,
             arrow_schema,
-        ))
+        )))
     }
 }
 
@@ -1989,7 +1957,7 @@ fn create_scheduler_decoder(
         is_structural,
         config.decoder_config.validate_on_decode,
         rx,
-    );
+    )?;
 
     let scheduler_handle = tokio::task::spawn(async move {
         let mut decode_scheduler = match DecodeBatchScheduler::try_new(
@@ -2003,7 +1971,6 @@ fn create_scheduler_decoder(
             config.cache,
             &filter,
             &config.decoder_config,
-            config.file_version,
         )
         .await
         {
@@ -2124,7 +2091,6 @@ pub fn schedule_and_decode_blocking(
         config.cache,
         &filter,
         &config.decoder_config,
-        config.file_version,
     ))?;
 
     // Schedule the requested rows
@@ -2154,7 +2120,7 @@ pub fn schedule_and_decode_blocking(
         config.decoder_config.validate_on_decode,
         is_structural,
         messages.into(),
-    );
+    )?;
 
     Ok(decode_iterator)
 }
@@ -2684,7 +2650,6 @@ pub async fn decode_batch(
         cache,
         filter,
         &DecoderConfig::default(),
-        version,
     )
     .await?;
     let (tx, rx) = unbounded_channel();
@@ -2697,7 +2662,7 @@ pub async fn decode_batch(
         is_structural,
         should_validate,
         rx,
-    );
+    )?;
     decode_stream.next().await.unwrap().task.await
 }
 
