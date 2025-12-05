@@ -1324,12 +1324,40 @@ impl DatasetIndexInternalExt for Dataset {
                     })?;
                 let index_metadata: lance_index::IndexMetadata =
                     serde_json::from_str(index_metadata)?;
-                let field = self.schema().field(column).ok_or_else(|| Error::Index {
-                    message: format!("Column {} does not exist in the schema", column),
-                    location: location!(),
-                })?;
 
-                let (_, element_type) = get_vector_type(self.schema(), column)?;
+                // Get the field: if column parameter matches the index name and doesn't exist in schema,
+                // get the actual column from index metadata
+                let (field, actual_column) = if let Some(f) = self.schema().field(column) {
+                    // Column exists in schema, use it
+                    (f, column)
+                } else if column == index_meta.name {
+                    // Column parameter is the index name, get the actual column from index metadata
+                    if let Some(field_id) = index_meta.fields.first() {
+                        let f = self.schema()
+                            .field_by_id(*field_id)
+                            .ok_or_else(|| Error::Index {
+                                message: format!(
+                                    "Index '{}' references field with id {} which does not exist in schema",
+                                    index_meta.name, field_id
+                                ),
+                                location: location!(),
+                            })?;
+                        (f, f.name.as_str())
+                    } else {
+                        return Err(Error::Index {
+                            message: format!("Index '{}' has no fields", index_meta.name),
+                            location: location!(),
+                        });
+                    }
+                } else {
+                    // Column doesn't exist in schema and is not the index name
+                    return Err(Error::Index {
+                        message: format!("Column {} does not exist in the schema", column),
+                        location: location!(),
+                    });
+                };
+
+                let (_, element_type) = get_vector_type(self.schema(), actual_column)?;
 
                 info!(target: TRACE_IO_EVENTS, index_uuid=uuid, r#type=IO_TYPE_OPEN_VECTOR, version="0.3", index_type=index_metadata.index_type);
 
