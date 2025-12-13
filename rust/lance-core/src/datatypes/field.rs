@@ -1053,19 +1053,32 @@ impl TryFrom<&ArrowField> for Field {
                         location: location!(),
                     });
                 }
-                // Validate Map key field is non-nullable (Arrow Map specification)
-                if let DataType::Struct(fields) = entries.data_type() {
-                    if let Some(key_field) = fields.first() {
-                        if key_field.is_nullable() {
-                            return Err(Error::Schema {
-                                message: format!(
-                                    "Map key field '{}' must be non-nullable according to Arrow Map specification",
-                                    key_field.name()
-                                ),
-                                location: location!(),
-                            });
-                        }
+                // Validate Map entries follow Arrow specification
+                let struct_fields = match entries.data_type() {
+                    DataType::Struct(fields) => fields,
+                    _ => {
+                        return Err(Error::Schema {
+                            message: "Map entries field must be a Struct<key, value>".to_string(),
+                            location: location!(),
+                        });
                     }
+                };
+                if struct_fields.len() < 2 {
+                    return Err(Error::Schema {
+                        message: "Map entries struct must contain both key and value fields"
+                            .to_string(),
+                        location: location!(),
+                    });
+                }
+                let key_field = &struct_fields[0];
+                if key_field.is_nullable() {
+                    return Err(Error::Schema {
+                        message: format!(
+                            "Map key field '{}' must be non-nullable according to Arrow Map specification",
+                            key_field.name()
+                        ),
+                        location: location!(),
+                    });
                 }
                 vec![Self::try_from(entries.as_ref())?]
             }
@@ -1330,6 +1343,39 @@ mod tests {
             DataType::Map(_, keys_sorted) => assert!(!keys_sorted, "keys_sorted should be false"),
             _ => panic!("Expected Map type"),
         }
+    }
+
+    #[test]
+    fn map_entries_must_be_struct() {
+        let entries_field = Arc::new(ArrowField::new("entries", DataType::Utf8, false));
+        let arrow_field = ArrowField::new("map_field", DataType::Map(entries_field, false), true);
+
+        let err = Field::try_from(&arrow_field).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Map entries field must be a Struct"),
+            "Expected struct requirement error, got {err}"
+        );
+    }
+
+    #[test]
+    fn map_entries_struct_needs_key_and_value() {
+        let entries_field = Arc::new(ArrowField::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![ArrowField::new(
+                "key",
+                DataType::Utf8,
+                false,
+            )])),
+            false,
+        ));
+        let arrow_field = ArrowField::new("map_field", DataType::Map(entries_field, false), true);
+
+        let err = Field::try_from(&arrow_field).unwrap_err();
+        assert!(
+            err.to_string().contains("must contain both key and value"),
+            "Expected both fields requirement error, got {err}"
+        );
     }
 
     #[test]

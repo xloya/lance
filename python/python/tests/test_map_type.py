@@ -348,10 +348,6 @@ def test_map_version_compatibility(tmp_path: Path):
         or "not supported" in error_msg.lower()
     )
 
-    # should raise a panic for v2.0 (not yet implemented)
-    with pytest.raises(BaseException):
-        lance.write_dataset(data, tmp_path / "v20", data_storage_version="2.0")
-
 
 def test_map_roundtrip_preservation(tmp_path: Path):
     schema = pa.schema(

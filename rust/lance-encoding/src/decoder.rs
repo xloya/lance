@@ -780,7 +780,7 @@ impl CoreFieldDecoderStrategy {
                 //  lose the keys_sorted property.
                 if *keys_sorted {
                     return Err(Error::NotSupported {
-                        source: format!("Map data type is only supported with keys_sorted=true now, current value is {}", *keys_sorted).into(),
+                        source: format!("Map data type is not supported with keys_sorted=true now, current value is {}", *keys_sorted).into(),
                         location: location!(),
                     });
                 }

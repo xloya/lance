@@ -7,7 +7,8 @@ use arrow_array::{Array, ArrayRef, MapArray};
 use arrow_schema::DataType;
 use futures::future::BoxFuture;
 use lance_arrow::deepcopy::deep_copy_nulls;
-use lance_core::Result;
+use lance_core::{Error, Result};
+use snafu::location;
 
 use crate::{
     decoder::{
@@ -57,7 +58,7 @@ impl FieldEncoder for MapStructuralEncoder {
         let offsets = map_array.offsets();
 
         // Add offsets to RepDefBuilder to handle nullability and list structure
-        let _has_garbage_values = if self.keep_original_array {
+        if self.keep_original_array {
             repdef.add_offsets(offsets.clone(), array.nulls().cloned())
         } else {
             repdef.add_offsets(offsets.clone(), deep_copy_nulls(array.nulls()))
@@ -192,13 +193,24 @@ impl StructuralDecodeArrayTask for StructuralMapDecodeTask {
 
         // Extract the entries field and keys_sorted from the map data type
         let (entries_field, keys_sorted) = match &self.data_type {
-            DataType::Map(field, keys_sorted) => (field.clone(), *keys_sorted),
-            _ => panic!("Map decoder did not have a map field"),
+            DataType::Map(field, keys_sorted) => {
+                if *keys_sorted {
+                    return Err(Error::NotSupported {
+                        source: "Map type decoder does not support keys_sorted=true now"
+                            .to_string()
+                            .into(),
+                        location: location!(),
+                    });
+                }
+                (field.clone(), *keys_sorted)
+            }
+            _ => {
+                return Err(Error::Schema {
+                    message: "Map decoder did not have a map field".to_string(),
+                    location: location!(),
+                });
+            }
         };
-
-        if keys_sorted {
-            panic!("Map type decoder does not support keys_sorted=true now")
-        }
 
         // Convert the decoded array to StructArray
         let entries = array
