@@ -1054,14 +1054,11 @@ impl TryFrom<&ArrowField> for Field {
                     });
                 }
                 // Validate Map entries follow Arrow specification
-                let struct_fields = match entries.data_type() {
-                    DataType::Struct(fields) => fields,
-                    _ => {
-                        return Err(Error::Schema {
-                            message: "Map entries field must be a Struct<key, value>".to_string(),
-                            location: location!(),
-                        });
-                    }
+                let DataType::Struct(struct_fields) = entries.data_type() else {
+                    return Err(Error::Schema {
+                        message: "Map entries field must be a Struct<key, value>".to_string(),
+                        location: location!(),
+                    });
                 };
                 if struct_fields.len() < 2 {
                     return Err(Error::Schema {
