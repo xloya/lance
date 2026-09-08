@@ -2,61 +2,27 @@
 // SPDX-FileCopyrightText: Copyright The Lance Authors
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use arrow_schema::Field;
+use arc_swap::ArcSwap;
+use arrow_schema::{DataType, Field};
 use async_trait::async_trait;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::future::BoxFuture;
 use lance_core::{
     Result,
-    cache::{CacheKey, LanceCache, UnsizedCacheKey},
-    deepsize::DeepSizeOf,
+    cache::{CacheKey, CacheKeySchema, KeyBuilder, LanceCache, UnsizedCacheKey},
+    deepsize::{Context, DeepSizeOf},
 };
 
 use crate::progress::IndexBuildProgress;
 use crate::registry::IndexPluginRegistry;
 use crate::scalar::RowIdRemapper;
 use crate::scalar::{CreatedIndex, IndexStore, ScalarIndex, expression::ScalarQueryParser};
+// Re-export training types that were previously defined here
+pub use crate::scalar::{TrainingCriteria, TrainingOrdering};
 
 pub const VALUE_COLUMN_NAME: &str = "value";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrainingOrdering {
-    /// The input will arrive sorted by the value column in ascending order
-    Values,
-    /// The input will arrive sorted by the address column in ascending order
-    Addresses,
-    /// The input will arrive in an arbitrary order
-    None,
-}
-
-#[derive(Debug, Clone)]
-pub struct TrainingCriteria {
-    pub ordering: TrainingOrdering,
-    pub needs_row_ids: bool,
-    pub needs_row_addrs: bool,
-}
-
-impl TrainingCriteria {
-    pub fn new(ordering: TrainingOrdering) -> Self {
-        Self {
-            ordering,
-            needs_row_ids: false,
-            needs_row_addrs: false,
-        }
-    }
-
-    pub fn with_row_id(mut self) -> Self {
-        self.needs_row_ids = true;
-        self
-    }
-
-    pub fn with_row_addr(mut self) -> Self {
-        self.needs_row_addrs = true;
-        self
-    }
-}
 
 /// A trait object for plugin-specific training parameters and data requirements.
 ///
@@ -212,11 +178,14 @@ pub trait ScalarIndexPlugin: Send + Sync + std::fmt::Debug {
     /// without re-reading metadata.
     async fn get_from_cache(
         &self,
-        _index_store: Arc<dyn IndexStore>,
+        index_store: Arc<dyn IndexStore>,
         _frag_reuse_index: Option<Arc<dyn RowIdRemapper>>,
         cache: &LanceCache,
     ) -> Result<Option<Arc<dyn ScalarIndex>>> {
-        Ok(cache.get_unsized_with_key(&ScalarIndexCacheKey).await)
+        let Some(entry) = cache.get_unsized_with_key(&ScalarIndexCacheKey).await else {
+            return Ok(None);
+        };
+        Ok(entry.index_for_store(&index_store))
     }
 
     /// Store a freshly-opened index in the cache.
@@ -225,9 +194,17 @@ pub trait ScalarIndexPlugin: Send + Sync + std::fmt::Debug {
     /// [`get_from_cache`](Self::get_from_cache).
     ///
     /// The default implementation stores the `Arc<dyn ScalarIndex>` in-memory.
-    async fn put_in_cache(&self, cache: &LanceCache, index: Arc<dyn ScalarIndex>) -> Result<()> {
+    async fn put_in_cache(
+        &self,
+        index_store: Arc<dyn IndexStore>,
+        cache: &LanceCache,
+        index: Arc<dyn ScalarIndex>,
+    ) -> Result<()> {
         cache
-            .insert_unsized_with_key(&ScalarIndexCacheKey, index)
+            .insert_unsized_with_key(
+                &ScalarIndexCacheKey,
+                Arc::new(StoreBoundScalarIndexCacheEntry::new(index_store, index)),
+            )
             .await;
         Ok(())
     }
@@ -247,13 +224,13 @@ pub trait ScalarIndexPlugin: Send + Sync + std::fmt::Debug {
         load: ScalarIndexLoad<'_>,
     ) -> Result<Arc<dyn ScalarIndex>> {
         if let Some(index) = self
-            .get_from_cache(index_store, frag_reuse_index, cache)
+            .get_from_cache(index_store.clone(), frag_reuse_index, cache)
             .await?
         {
             return Ok(index);
         }
         let index = load.await?;
-        self.put_in_cache(cache, index.clone()).await?;
+        self.put_in_cache(index_store, cache, index.clone()).await?;
         Ok(index)
     }
 
@@ -277,6 +254,55 @@ pub trait ScalarIndexPlugin: Send + Sync + std::fmt::Debug {
     fn details_as_json(&self, _details: &prost_types::Any) -> Result<serde_json::Value> {
         // Return an empty JSON object as the default implementation
         Ok(serde_json::json!({}))
+    }
+
+    /// Optionally create a seed writer for the given column.
+    ///
+    /// A seed writer observes column values during data file writes, accumulates
+    /// compact statistics in memory, and serializes them as a global buffer
+    /// embedded in the data file footer. The buffer is later harvested during
+    /// index updates to skip a full column scan.
+    ///
+    /// All parameters needed to construct the writer must be derivable from
+    /// `index_details` — this method must not perform any I/O. Return `Ok(None)`
+    /// if this index type does not support seed writing.
+    async fn create_seed_writer(
+        &self,
+        _field_path: &str,
+        _data_type: &DataType,
+        _index_details: &prost_types::Any,
+    ) -> Result<Option<Box<dyn super::seed::IndexSeedWriter>>> {
+        Ok(None)
+    }
+
+    /// Returns true if this index type may have seed buffers embedded in data
+    /// files for the given index configuration.
+    ///
+    /// When false the caller can skip opening data files to look for seeds
+    /// entirely, avoiding I/O for index types or configurations that never
+    /// write seeds.
+    fn might_use_seeds(&self, _index_details: &prost_types::Any) -> bool {
+        false
+    }
+
+    /// Attempt to update `reference_index` using pre-harvested `seeds` instead
+    /// of re-scanning column data.
+    ///
+    /// Each [`FragmentSeed`](super::seed::FragmentSeed) carries the raw bytes
+    /// written by the corresponding [`IndexSeedWriter`](super::seed::IndexSeedWriter)
+    /// and the original `metadata_value` stored in the data file, which the plugin
+    /// can use for compatibility validation (e.g. confirming `rows_per_zone`).
+    ///
+    /// Return `Ok(Some(created))` if the seed-based update succeeded, or
+    /// `Ok(None)` to signal that the caller should fall back to a full column scan.
+    async fn update_from_seeds(
+        &self,
+        _seeds: Vec<super::seed::FragmentSeed>,
+        _reference_index: Arc<dyn ScalarIndex>,
+        _index_details: &prost_types::Any,
+        _dest_store: &dyn IndexStore,
+    ) -> Result<Option<CreatedIndex>> {
+        Ok(None)
     }
 }
 
@@ -322,18 +348,121 @@ where
     from_state(state)
 }
 
-/// In-memory cache key for a whole `Arc<dyn ScalarIndex>`.
+pub(crate) async fn single_flight_store_bound_open(
+    index_store: Arc<dyn IndexStore>,
+    cache: &LanceCache,
+    load: ScalarIndexLoad<'_>,
+) -> Result<Arc<dyn ScalarIndex>> {
+    let pending_load = Arc::new(Mutex::new(Some(load)));
+    let cache_load = pending_load.clone();
+    let cache_index_store = index_store.clone();
+    let entry = cache
+        .get_or_insert_unsized_with_key(ScalarIndexCacheKey, move || async move {
+            let load = take_scalar_index_load(&cache_load)?.ok_or_else(|| {
+                lance_core::Error::internal(
+                    "store-bound scalar index cache loader was already consumed",
+                )
+            })?;
+            let index = load.await?;
+            Ok(Arc::new(StoreBoundScalarIndexCacheEntry::new(
+                cache_index_store,
+                index,
+            )))
+        })
+        .await?;
+
+    if let Some(index) = entry.index_for_store(&index_store) {
+        return Ok(index);
+    }
+
+    // The cache slot stays stable across rotations. Serialize replacements and
+    // recheck after locking so same-binding waiters reuse the first reload.
+    let _replacement_guard = entry.replacement_guard.lock().await;
+    if let Some(index) = entry.index_for_store(&index_store) {
+        return Ok(index);
+    }
+
+    let Some(load) = take_scalar_index_load(&pending_load)? else {
+        // The cache loader ran, so this entry was opened through `index_store`.
+        // A custom store may conservatively report no binding equivalence even
+        // when compared with the same instance.
+        return Ok(entry.index());
+    };
+    let index = load.await?;
+    entry.replace(index_store, index.clone());
+    Ok(index)
+}
+
+fn take_scalar_index_load<'a>(
+    pending_load: &Arc<Mutex<Option<ScalarIndexLoad<'a>>>>,
+) -> Result<Option<ScalarIndexLoad<'a>>> {
+    pending_load
+        .lock()
+        .map_err(|_| {
+            lance_core::Error::internal("store-bound scalar index cache loader mutex was poisoned")
+        })
+        .map(|mut pending_load| pending_load.take())
+}
+
+/// A live scalar index together with the store binding used to open it.
+#[derive(DeepSizeOf)]
+struct StoreBoundScalarIndexBinding {
+    index_store: Arc<dyn IndexStore>,
+    index: Arc<dyn ScalarIndex>,
+}
+
+/// A stable cache slot for one live, store-bound scalar index.
+pub struct StoreBoundScalarIndexCacheEntry {
+    binding: ArcSwap<StoreBoundScalarIndexBinding>,
+    replacement_guard: tokio::sync::Mutex<()>,
+}
+
+impl DeepSizeOf for StoreBoundScalarIndexCacheEntry {
+    fn deep_size_of_children(&self, context: &mut Context) -> usize {
+        self.binding.load_full().deep_size_of_children(context)
+    }
+}
+
+impl StoreBoundScalarIndexCacheEntry {
+    fn new(index_store: Arc<dyn IndexStore>, index: Arc<dyn ScalarIndex>) -> Self {
+        Self {
+            binding: ArcSwap::from_pointee(StoreBoundScalarIndexBinding { index_store, index }),
+            replacement_guard: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn index_for_store(&self, index_store: &Arc<dyn IndexStore>) -> Option<Arc<dyn ScalarIndex>> {
+        let binding = self.binding.load();
+        index_store
+            .is_same_storage_binding(binding.index_store.as_ref())
+            .then(|| binding.index.clone())
+    }
+
+    fn replace(&self, index_store: Arc<dyn IndexStore>, index: Arc<dyn ScalarIndex>) {
+        self.binding.store(Arc::new(StoreBoundScalarIndexBinding {
+            index_store,
+            index,
+        }));
+    }
+
+    /// Return a shared handle to the cached scalar index.
+    pub fn index(&self) -> Arc<dyn ScalarIndex> {
+        self.binding.load().index.clone()
+    }
+}
+
+/// In-memory cache key for a live, store-bound scalar index.
 ///
 /// Used by the default [`ScalarIndexPlugin::get_from_cache`] /
 /// [`ScalarIndexPlugin::put_in_cache`] implementations. The cache is already
-/// per-index namespaced by the caller, so a constant key suffices. Trait objects
+/// per-index namespaced by the caller, so a constant key suffices. The entry
 /// cannot be serialized, so this is an [`UnsizedCacheKey`] with no codec —
 /// plugins that want a persistable cache entry override those methods with a
 /// sized key.
 pub struct ScalarIndexCacheKey;
 
 impl UnsizedCacheKey for ScalarIndexCacheKey {
-    type ValueType = dyn ScalarIndex;
+    type ValueType = StoreBoundScalarIndexCacheEntry;
 
     fn key(&self) -> Cow<'_, str> {
         Cow::Borrowed("scalar_index")
@@ -341,5 +470,13 @@ impl UnsizedCacheKey for ScalarIndexCacheKey {
 
     fn type_name() -> &'static str {
         "ScalarIndex"
+    }
+
+    fn schema() -> CacheKeySchema {
+        CacheKeySchema::new("lance.scalar.registry.scalar-index-key", 2)
+    }
+
+    fn write_key(&self, builder: &mut KeyBuilder) {
+        builder.write_variant(0);
     }
 }
